@@ -1,0 +1,39 @@
+[Unit]
+# Template unit for additional milou instances on the same host.
+#
+# `systemctl start milou@<name>` loads /etc/milou/<name>.conf and journals
+# under `milou@<name>`. Use this when one host hosts multiple panel
+# nodes — e.g. anytls on ip1, vless on ip2 — each instance pinned to a
+# specific IP via the conf's `listen=` key so they don't compete for
+# the same port.
+#
+# The non-templated `milou.service` keeps owning /etc/milou/milou.conf
+# (the default instance); operators who only run one node never see the
+# template form.
+#
+# Example:
+#   echo 'listen=10.0.0.2' >> /etc/milou/milou2.conf       # then fill the rest
+#   systemctl enable --now milou@milou2.service
+#   journalctl -u milou@milou2 -f
+Description=milou-backend daemon (instance %i)
+Documentation=https://github.com/milou/milou-backend
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/milou
+ExecStart=/usr/local/milou/milou -c /etc/milou/%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

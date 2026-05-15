@@ -1,0 +1,111 @@
+# /etc/milou/milou.conf  — milou-backend configuration
+#
+# Format is intentionally identical to vaxilu/soga's /etc/soga/soga.conf so
+# existing tooling/scripts can drop the file in unchanged. Comments start
+# with '#' or ';'. Unknown keys are kept in the Raw map for forward-compat
+# and ignored without warning.
+#
+# ---------------------------------------------------------------------------
+# panel link (required)
+# ---------------------------------------------------------------------------
+type=soga-v1
+server_type=naive
+node_id=0
+soga_key=
+api=webapi
+webapi_url=
+webapi_key=
+
+# ---------------------------------------------------------------------------
+# soga-mode legacy keys (accepted for compatibility, not used by milou)
+# ---------------------------------------------------------------------------
+db_host=
+db_port=
+db_name=
+db_user=
+db_password=
+
+# ---------------------------------------------------------------------------
+# TLS cert/key for the naive listener
+# (soga names — milou understands both these and naive_cert_path/key_path)
+# ---------------------------------------------------------------------------
+cert_file=/etc/milou/cert.pem
+key_file=/etc/milou/key.pem
+cert_mode=manual
+cert_domain=
+cert_key_length=ec-256
+
+# DNS-mode ACME knobs (soga-only; milou expects pre-issued certs).
+# Kept here so the config file shape matches soga 1:1.
+dns_provider=
+default_dns=1.1.1.1,8.8.8.8
+dns_cache_time=10
+dns_strategy=ipv4_first
+
+# ---------------------------------------------------------------------------
+# proto-specific (soga-only; ignored by milou)
+# ---------------------------------------------------------------------------
+v2ray_reduce_memory=false
+vless=false
+vless_flow=
+
+# ---------------------------------------------------------------------------
+# PROXY-protocol (Caddy listen_wrappers proxy_protocol)
+# ---------------------------------------------------------------------------
+proxy_protocol=false
+tunnel_proxy_protocol=false
+
+# ---------------------------------------------------------------------------
+# redis (cluster-wide IP limit — phase-B)
+# ---------------------------------------------------------------------------
+redis_enable=false
+redis_addr=
+redis_password=
+redis_db=0
+
+# ---------------------------------------------------------------------------
+# per-user limits (counters land in the plugin; enforcement is phase-B)
+# ---------------------------------------------------------------------------
+conn_limit_expiry=60
+user_conn_limit=0
+user_speed_limit=0
+node_speed_limit=0
+
+# ---------------------------------------------------------------------------
+# control loop timing
+# ---------------------------------------------------------------------------
+check_interval=60
+log_level=info
+
+# ---------------------------------------------------------------------------
+# data-plane listen IP (optional)
+# Empty = bind on all interfaces. Set only when running multiple milou
+# instances on the same host (e.g. systemd milou@a / milou@b each with
+# its own /etc/milou/milou-<n>.conf) so each instance owns one IP and
+# they don't compete for the same port.
+# ---------------------------------------------------------------------------
+listen=
+
+# ---------------------------------------------------------------------------
+# block list (audit rules) + geosite/geoip data files
+#   block_list_file = soga-style rules file (domain:/full:/regexp:/ip:/
+#                     port:/geosite:/geoip:/plain). install.sh drops the
+#                     dat files. geosite:/geoip: rules silently no-op
+#                     when the corresponding dat file is missing.
+# ---------------------------------------------------------------------------
+block_list_file=/etc/milou/blockList
+geosite_dat=/etc/milou/geosite.dat
+geoip_dat=/etc/milou/geoip.dat
+
+# ---------------------------------------------------------------------------
+# data plane (milou-specific extensions, no soga equivalents)
+# ---------------------------------------------------------------------------
+caddy_bin=/usr/local/milou/caddy
+caddy_workdir=/var/lib/milou/caddy
+caddy_admin_addr=127.0.0.1:2019
+# naive_probe_host — secret hostname that returns the hidden page for
+# authenticated probes. Empty = generic probe-resistance without a domain.
+naive_probe_host=
+# naive_fake_server — static directory whose contents are served for
+# unauthenticated probes. Empty = bare 200 "" response.
+naive_fake_server=
