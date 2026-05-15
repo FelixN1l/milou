@@ -64,11 +64,15 @@ fi
 # --- 3. resolve version + download tarball -------------------------------
 if [[ -z "$MILOU_VERSION" ]]; then
     green ">> resolving latest release of $MILOU_REPO"
-    MILOU_VERSION=$(
-        curl -fsSL "https://api.github.com/repos/${MILOU_REPO}/releases/latest" \
-            | grep -m1 '"tag_name"' \
-            | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/'
-    )
+    # Capture the response in one shot, THEN parse. Doing
+    #   curl ... | grep -m1 ...
+    # under `set -o pipefail` is fragile: grep -m1 closes the pipe after
+    # the first match, curl gets SIGPIPE, exits 23, and the whole script
+    # fails. Read the body fully, then parse from a string.
+    RESP=$(curl -fsSL "https://api.github.com/repos/${MILOU_REPO}/releases/latest") || {
+        red "could not reach GitHub API for $MILOU_REPO"; exit 1
+    }
+    MILOU_VERSION=$(printf '%s\n' "$RESP" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
     [[ -n "$MILOU_VERSION" ]] || { red "could not resolve latest tag — pass MILOU_VERSION=vX.Y.Z"; exit 1; }
 fi
 green ">> version: $MILOU_VERSION"
