@@ -88,7 +88,11 @@ curl -fsSL -o "$TAR"     "${BASE}/${TAR}"
 curl -fsSL -o SHA256SUMS "${BASE}/SHA256SUMS"
 
 green ">> verifying checksum"
-EXPECTED=$(awk -v f="$TAR" '$2==f {print $1}' SHA256SUMS)
+# sha256sum has two output styles depending on text/binary mode and host:
+#   linux (default):   <hash>  <filename>
+#   binary mode (-b)   <hash> *<filename>     # leading asterisk on the name
+# Strip the optional leading `*` so either form matches.
+EXPECTED=$(awk -v f="$TAR" '{ sub(/^\*/,"",$2); if ($2==f) { print $1; exit } }' SHA256SUMS)
 [[ -n "$EXPECTED" ]] || { red "no entry for $TAR in SHA256SUMS"; exit 1; }
 ACTUAL=$(sha256sum "$TAR" | awk '{print $1}')
 [[ "$ACTUAL" == "$EXPECTED" ]] || { red "checksum mismatch: expected $EXPECTED got $ACTUAL"; exit 1; }
