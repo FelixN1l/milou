@@ -1,0 +1,31 @@
+# /etc/milou/blockList — milou-backend audit / block rules
+#
+# soga-format rule file. One rule per line. Lines starting with `#` are
+# comments; anything after `#` on a rule line is also a comment, so
+# annotating rules inline works:
+#
+#   ip:185.220.100.0/24   # tor exit nodes
+#
+# Rule prefixes:
+#
+#   domain:<d>     — host==<d> OR host endsWith ".<d>" (subdomain match)
+#   full:<d>       — host==<d> exactly
+#   regexp:<re>    — Go RE2 against the host
+#   ip:<addr|cidr> — single IP or CIDR
+#   port:<list>    — comma-separated; "1-1024,12345" syntax for ranges
+#   geosite:<cat>  — V2Ray geosite.dat category (requires /etc/milou/geosite.dat,
+#                    auto-downloaded by install.sh)
+#   geoip:<cc>     — V2Ray geoip.dat country code (requires geoip.dat)
+#   <plain text>   — case-insensitive substring of host
+#
+# Edits take effect within ~10s via the daemon's mtime watcher — no
+# `milou restart` needed.
+#
+# Empty by default; uncomment / add rules below.
+
+# Examples (commented out — uncomment to activate):
+#
+# port:25,465,587            # outbound SMTP
+# domain:doubleclick.net     # ad-tech
+# geosite:category-ads-all   # ad / tracker categories from Loyalsoldier
+# ip:185.220.100.0/24        # Tor exit ranges (drop in real CIDRs)

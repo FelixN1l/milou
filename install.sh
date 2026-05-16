@@ -117,6 +117,16 @@ else
     yellow ">> kept existing $MILOU_CONFDIR/milou.conf"
 fi
 
+# Seed an empty blockList so milou.conf's default `block_list_file=
+# /etc/milou/blockList` resolves to a real file. Operators editing the
+# file later get mtime hot-reload within 10s.
+if [[ ! -f "$MILOU_CONFDIR/blockList" ]]; then
+    install -m 0644 scripts/blockList.default "$MILOU_CONFDIR/blockList"
+    yellow ">> wrote default $MILOU_CONFDIR/blockList (empty rule set — edit to add rules)"
+else
+    yellow ">> kept existing $MILOU_CONFDIR/blockList"
+fi
+
 # --- 4a. geosite.dat / geoip.dat ----------------------------------------
 # Same Loyalsoldier release used by sing-box's geosite/geoip rule families.
 # Re-download when missing OR >30 days old. Failures are soft — only
