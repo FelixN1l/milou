@@ -352,15 +352,20 @@ init_ask() {
 }
 
 # init_set_kv <key> <value>  — replace an existing key=value line in $CONF
-# in place, or append it if missing. Uses awk so it survives whitespace and
-# inline comments idiomatic to the soga config format.
+# in place, or append it if missing.
+#
+# Why ENVIRON instead of awk -v: -v passes the value through awk's escape
+# parser, so a literal `\n` / `\t` / `\\` in the value would be interpreted
+# (a webapi_key happening to contain `\n` would split across two lines —
+# the second line ending up as a bare value, which then trips the daemon's
+# config parser with "expected key=value, got <leftover>"). ENVIRON sees
+# the raw bytes verbatim.
 init_set_kv() {
     local key=$1 val=$2
     if [[ -f "$CONF" ]] && grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$CONF"; then
-        # In-place rewrite; preserve trailing newline and the rest of the file.
         local tmp=$CONF.tmp
-        awk -v k="$key" -v v="$val" '
-            BEGIN { done=0 }
+        K="$key" V="$val" awk '
+            BEGIN { k=ENVIRON["K"]; v=ENVIRON["V"]; done=0 }
             {
                 line=$0
                 if (!done && match(line, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=/)) {
