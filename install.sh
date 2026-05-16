@@ -1,106 +1,149 @@
 #!/usr/bin/env bash
-# Production install script — runs from inside an extracted release
-# tarball. Assumes `milou` and `caddy` binaries are sitting in the same
-# directory as this script. For dev / source builds, see
-# install-from-source.sh (kept alongside this file).
+# milou-backend installer.
 #
-# Layout produced:
-#   /usr/local/milou/milou               — daemon binary
-#   /usr/local/milou/caddy               — data-plane binary
-#   /usr/bin/milou                       — management wrapper
-#   /etc/milou/milou.conf                — config (template if missing)
-#   /etc/systemd/system/milou.service    — systemd unit
-#   /var/lib/milou/caddy/                — caddy work dir
+# Run via curl|bash:
 #
-# Side effects:
-#   - apt install: ca-certificates, openssl, cron (acme.sh's cron host)
-#   - acme.sh installed under ~/.acme.sh if absent
-#   - systemd unit enabled (but NOT started — operator must fill in
-#     node_id / webapi_url / webapi_key / cert_domain first)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/FelixN1l/milou/main/install.sh)
+#
+# Or with a pinned version:
+#
+#   MILOU_VERSION=v0.1.0 bash <(curl -fsSL https://raw.githubusercontent.com/FelixN1l/milou/main/install.sh)
+#
+# Sister script `milou.sh` is in the same repo; the installer drops it
+# into /usr/bin/milou as the management wrapper (same pattern as soga's
+# /usr/bin/soga). After install, the daemon is set up but NOT started —
+# run `milou init` to fill in panel keys interactively, then `milou start`.
 
 set -euo pipefail
 
-red()    { printf "\033[0;31m%s\033[0m\n" "$*"; }
-green()  { printf "\033[0;32m%s\033[0m\n" "$*"; }
-yellow() { printf "\033[0;33m%s\033[0m\n" "$*"; }
+# --- knobs ----------------------------------------------------------------
+: "${MILOU_REPO:=FelixN1l/milou}"       # public repo holding releases + scripts
+: "${MILOU_VERSION:=}"                  # empty → resolve latest tag
+: "${MILOU_PREFIX:=/usr/local/milou}"   # binary install dir
+: "${MILOU_CONFDIR:=/etc/milou}"        # config dir
+: "${MILOU_VARDIR:=/var/lib/milou}"     # state/work dir
+
+# --- ANSI -----------------------------------------------------------------
+if [[ -t 1 ]]; then
+    R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; N='\033[0m'
+else
+    R=''; G=''; Y=''; N=''
+fi
+red()    { printf "${R}%s${N}\n" "$*"; }
+green()  { printf "${G}%s${N}\n" "$*"; }
+yellow() { printf "${Y}%s${N}\n" "$*"; }
 
 [[ $EUID -eq 0 ]] || { red "must run as root"; exit 1; }
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-[[ -x "$SCRIPT_DIR/milou" && -x "$SCRIPT_DIR/caddy" ]] || {
-    red "expected milou + caddy binaries next to install.sh — for a"
-    red "from-source build use scripts/dist/install-from-source.sh"
-    exit 1
-}
+# --- arch detect ----------------------------------------------------------
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) red "unsupported arch $(uname -m)"; exit 1 ;;
+esac
+green ">> arch: $ARCH"
 
-# --- 1. apt deps --------------------------------------------------------
-green ">> installing runtime prerequisites (apt)"
+# --- 1. runtime prerequisites --------------------------------------------
+# acme.sh's cron job lives in cron; openssl is used by milou cert status.
+green ">> installing apt prerequisites"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates openssl curl cron
+apt-get install -y -qq ca-certificates openssl curl cron tar
 
-# --- 2. acme.sh ---------------------------------------------------------
-# Identical to vaxilu/soga's install.sh: leaves the cron job in place so
-# automatic renewals fire. milou's daemon issues the initial cert via
-# acme.sh on first start when cert_mode != manual.
+# --- 2. acme.sh ----------------------------------------------------------
+# Same pattern as soga/install.sh: installs acme.sh on first run so cert
+# issuance / renewal works out of the box. Subsequent runs leave it alone.
 if [[ ! -f "$HOME/.acme.sh/acme.sh" ]]; then
     green ">> installing acme.sh"
     curl -fsSL https://get.acme.sh | sh >/tmp/acme-install.log 2>&1 || {
-        red "acme.sh install failed — see /tmp/acme-install.log"
-        tail -20 /tmp/acme-install.log
-        exit 1
+        red "acme.sh install failed — see /tmp/acme-install.log"; tail -20 /tmp/acme-install.log; exit 1
     }
     "$HOME/.acme.sh/acme.sh" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 fi
 
-# --- 3. layout ----------------------------------------------------------
-green ">> laying out /usr/local/milou /etc/milou /var/lib/milou"
-install -d -m 0755 /usr/local/milou /etc/milou /var/lib/milou/caddy
-install -m 0755 "$SCRIPT_DIR/milou" /usr/local/milou/milou
-install -m 0755 "$SCRIPT_DIR/caddy" /usr/local/milou/caddy
+# --- 3. resolve version + download tarball -------------------------------
+if [[ -z "$MILOU_VERSION" ]]; then
+    green ">> resolving latest release of $MILOU_REPO"
+    # Capture the response in one shot, THEN parse. Doing
+    #   curl ... | grep -m1 ...
+    # under `set -o pipefail` is fragile: grep -m1 closes the pipe after
+    # the first match, curl gets SIGPIPE, exits 23, and the whole script
+    # fails. Read the body fully, then parse from a string.
+    RESP=$(curl -fsSL "https://api.github.com/repos/${MILOU_REPO}/releases/latest") || {
+        red "could not reach GitHub API for $MILOU_REPO"; exit 1
+    }
+    MILOU_VERSION=$(printf '%s\n' "$RESP" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+    [[ -n "$MILOU_VERSION" ]] || { red "could not resolve latest tag — pass MILOU_VERSION=vX.Y.Z"; exit 1; }
+fi
+green ">> version: $MILOU_VERSION"
 
-# Static fake-website content (a looking-glass facsimile) for caddy's
-# file_server to serve when probes hit the naive node without the secret
-# URL. The path is referenced by milou.conf.default's naive_fake_server=
-# setting. We overwrite on every install so style updates ship cleanly;
-# operators who've customised should mount their own dir and point
-# naive_fake_server= elsewhere.
-if [[ -d "$SCRIPT_DIR/fakeweb" ]]; then
-    install -d -m 0755 /usr/local/milou/fakeweb
-    cp -r "$SCRIPT_DIR/fakeweb/." /usr/local/milou/fakeweb/
-    find /usr/local/milou/fakeweb -type f -exec chmod 0644 {} +
-    find /usr/local/milou/fakeweb -type d -exec chmod 0755 {} +
-    green ">> installed fakeweb cover pages to /usr/local/milou/fakeweb"
+BASE="https://github.com/${MILOU_REPO}/releases/download/${MILOU_VERSION}"
+TAR="milou-${MILOU_VERSION}-linux-${ARCH}.tar.gz"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+cd "$TMP"
+
+green ">> downloading $TAR"
+curl -fsSL -o "$TAR"     "${BASE}/${TAR}"
+curl -fsSL -o SHA256SUMS "${BASE}/SHA256SUMS"
+
+green ">> verifying checksum"
+# sha256sum has two output styles depending on text/binary mode and host:
+#   linux (default):   <hash>  <filename>
+#   binary mode (-b)   <hash> *<filename>     # leading asterisk on the name
+# Strip the optional leading `*` so either form matches.
+EXPECTED=$(awk -v f="$TAR" '{ sub(/^\*/,"",$2); if ($2==f) { print $1; exit } }' SHA256SUMS)
+[[ -n "$EXPECTED" ]] || { red "no entry for $TAR in SHA256SUMS"; exit 1; }
+ACTUAL=$(sha256sum "$TAR" | awk '{print $1}')
+[[ "$ACTUAL" == "$EXPECTED" ]] || { red "checksum mismatch: expected $EXPECTED got $ACTUAL"; exit 1; }
+
+green ">> extracting"
+tar xzf "$TAR"
+EXTRACTED="milou-${MILOU_VERSION}-linux-${ARCH}"
+[[ -d "$EXTRACTED" ]] || { red "tarball layout unexpected — no $EXTRACTED/ inside"; exit 1; }
+cd "$EXTRACTED"
+
+# --- 4. layout -----------------------------------------------------------
+green ">> laying out $MILOU_PREFIX $MILOU_CONFDIR $MILOU_VARDIR"
+install -d -m 0755 "$MILOU_PREFIX" "$MILOU_CONFDIR" "$MILOU_VARDIR/caddy"
+install -m 0755 milou "$MILOU_PREFIX/milou"
+install -m 0755 caddy "$MILOU_PREFIX/caddy"
+install -m 0644 scripts/milou.conf.default "$MILOU_PREFIX/milou.conf.default"
+
+# Static fake-website content (looking-glass facsimile) — caddy
+# file_server serves it as the naive backend's probe-resistance
+# fallthrough. Overwrite on every install so style updates ship.
+# Operators with their own cover content should point
+# naive_fake_server= elsewhere in milou.conf.
+if [[ -d fakeweb ]]; then
+    install -d -m 0755 "$MILOU_PREFIX/fakeweb"
+    cp -r fakeweb/. "$MILOU_PREFIX/fakeweb/"
+    find "$MILOU_PREFIX/fakeweb" -type f -exec chmod 0644 {} +
+    find "$MILOU_PREFIX/fakeweb" -type d -exec chmod 0755 {} +
+    green ">> installed fakeweb cover pages to $MILOU_PREFIX/fakeweb"
 fi
 
-if [[ ! -f /etc/milou/milou.conf ]]; then
-    install -m 0640 "$SCRIPT_DIR/scripts/milou.conf.default" /etc/milou/milou.conf
-    yellow ">> wrote default /etc/milou/milou.conf — edit before starting"
+if [[ ! -f "$MILOU_CONFDIR/milou.conf" ]]; then
+    install -m 0640 scripts/milou.conf.default "$MILOU_CONFDIR/milou.conf"
+    yellow ">> wrote default $MILOU_CONFDIR/milou.conf — run 'milou init' to fill it in"
 else
-    yellow ">> kept existing /etc/milou/milou.conf"
+    yellow ">> kept existing $MILOU_CONFDIR/milou.conf"
 fi
 
 # Seed an empty blockList so milou.conf's default `block_list_file=
-# /etc/milou/blockList` setting resolves to a real (empty + commented)
-# file out of the box. Operators editing the file later get mtime
-# hot-reload within 10s. Keep existing content untouched on upgrade.
-if [[ ! -f /etc/milou/blockList ]]; then
-    install -m 0644 "$SCRIPT_DIR/scripts/blockList.default" /etc/milou/blockList
-    yellow ">> wrote default /etc/milou/blockList (empty rule set — edit to add rules)"
+# /etc/milou/blockList` resolves to a real file. Operators editing the
+# file later get mtime hot-reload within 10s.
+if [[ ! -f "$MILOU_CONFDIR/blockList" ]]; then
+    install -m 0644 scripts/blockList.default "$MILOU_CONFDIR/blockList"
+    yellow ">> wrote default $MILOU_CONFDIR/blockList (empty rule set — edit to add rules)"
 else
-    yellow ">> kept existing /etc/milou/blockList"
+    yellow ">> kept existing $MILOU_CONFDIR/blockList"
 fi
 
-# --- 3a. geosite.dat / geoip.dat ----------------------------------------
-# Used by the blocklist's `geosite:<cat>` and `geoip:<cc>` rule types
-# (e.g. `geosite:category-ads-all`, `geoip:cn`). The Loyalsoldier release
-# is the canonical fork — broader category coverage than v2fly's own
-# dat and faster updates.
-#
-# Re-downloads when the file is missing OR older than 30 days, so a
-# routine `bash install.sh` upgrade also refreshes stale routing data.
-# Failures are non-fatal — the dat files are optional, only blocklist
-# rules that reference them stop firing.
+# --- 4a. geosite.dat / geoip.dat ----------------------------------------
+# Same Loyalsoldier release used by sing-box's geosite/geoip rule families.
+# Re-download when missing OR >30 days old. Failures are soft — only
+# blocklist rules that reference those data files stop firing.
 GEOSITE_URL=https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
 GEOIP_URL=https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
 fetch_dat() {
@@ -109,42 +152,37 @@ fetch_dat() {
         yellow ">> kept existing $dest (refreshed within 30 days)"
         return 0
     fi
-    green ">> downloading $name -> $dest"
+    green ">> downloading $name → $dest"
     if curl -fsSL --connect-timeout 10 --max-time 120 -o "$dest.new" "$url"; then
-        mv "$dest.new" "$dest"
-        chmod 0644 "$dest"
+        mv "$dest.new" "$dest"; chmod 0644 "$dest"
     else
         rm -f "$dest.new"
         yellow ">> $name download failed — geosite:/geoip: rules will be skipped at runtime"
     fi
 }
-fetch_dat "$GEOSITE_URL" /etc/milou/geosite.dat "geosite.dat"
-fetch_dat "$GEOIP_URL"   /etc/milou/geoip.dat   "geoip.dat"
+fetch_dat "$GEOSITE_URL" "$MILOU_CONFDIR/geosite.dat" geosite.dat
+fetch_dat "$GEOIP_URL"   "$MILOU_CONFDIR/geoip.dat"   geoip.dat
 
-# --- 4. management wrapper + systemd ------------------------------------
-install -m 0755 "$SCRIPT_DIR/scripts/milou.sh" /usr/bin/milou
-install -m 0644 "$SCRIPT_DIR/scripts/milou.service"  /etc/systemd/system/milou.service
-# Template unit for additional instances; resolves milou@<name> to
-# /etc/milou/<name>.conf. The default `milou.service` keeps owning
-# /etc/milou/milou.conf so single-node operators see no change.
-install -m 0644 "$SCRIPT_DIR/scripts/milou@.service" /etc/systemd/system/milou@.service
+# --- 5. management wrapper + systemd ------------------------------------
+install -m 0755 scripts/milou.sh        /usr/bin/milou
+install -m 0644 scripts/milou.service   /etc/systemd/system/milou.service
+install -m 0644 scripts/milou@.service  /etc/systemd/system/milou@.service
 systemctl daemon-reload
 systemctl enable milou.service >/dev/null 2>&1 || true
 
-# --- 5. summary ---------------------------------------------------------
+# --- 6. summary ---------------------------------------------------------
 green ""
-green "==== milou-backend installed ===="
-green "  binary       : /usr/local/milou/milou"
-green "  caddy        : /usr/local/milou/caddy"
-green "  config       : /etc/milou/milou.conf"
-green "  data dir     : /var/lib/milou/caddy"
+green "==== milou-backend $MILOU_VERSION installed ===="
+green "  binary       : $MILOU_PREFIX/milou"
+green "  caddy        : $MILOU_PREFIX/caddy"
+green "  config       : $MILOU_CONFDIR/milou.conf"
+green "  data dir     : $MILOU_VARDIR/caddy"
 green "  systemd unit : /etc/systemd/system/milou.service (enabled, not started)"
 green "  template     : /etc/systemd/system/milou@.service  (for extra instances)"
-green "  manage cmd   : milou [start|stop|restart|status|log|config|cert|version]"
+green "  manage cmd   : milou [start|stop|restart|status|log|init|config|cert|version]"
 yellow ""
-yellow "Edit /etc/milou/milou.conf to fill node_id, webapi_url, webapi_key,"
-yellow "cert_domain (and DNS_* keys for cert_mode=dns) — then 'milou start'."
+yellow "Next: run 'milou init' to fill in node_id / webapi_url / webapi_key / cert_domain,"
+yellow "      then 'milou cert issue' (if cert_mode=http or dns), then 'milou start'."
 yellow ""
-yellow "Multi-instance: drop /etc/milou/<name>.conf and run"
+yellow "Multi-instance: drop $MILOU_CONFDIR/<name>.conf and"
 yellow "  systemctl enable --now milou@<name>.service"
-yellow "Each instance binds to its own listen= IP from its own conf."
