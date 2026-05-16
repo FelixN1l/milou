@@ -106,9 +106,15 @@ caddy_admin_addr=127.0.0.1:2019
 # naive_probe_host — secret hostname that returns the hidden page for
 # authenticated probes. Empty = generic probe-resistance without a domain.
 naive_probe_host=
-# naive_fake_server — static directory whose contents are served for
-# unauthenticated probes. install.sh deploys a self-contained
-# looking-glass facsimile (no real diagnostic backend; the form returns
-# a believable "temporarily unavailable" notice). Set to empty for the
-# bare 200 "" response, or to your own static directory.
-naive_fake_server=/usr/local/milou/fakeweb/lookingglass
+# naive_fake_server — static directory served when an unauthenticated
+# probe hits the naive listener. Resolution order:
+#
+#   unset / blank  →  bundled /usr/local/milou/fakeweb/lookingglass
+#                     (install.sh drops a self-contained looking-glass
+#                     facsimile here; auto-detected on render so it
+#                     just works after first install).
+#   <path>         →  serve from that directory.
+#   none / off / - →  explicit opt-out; bare 200 "" response.
+#
+# Leave as the default unless you want to point at your own assets.
+naive_fake_server=
