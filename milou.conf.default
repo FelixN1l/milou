@@ -87,6 +87,19 @@ log_level=info
 listen=
 
 # ---------------------------------------------------------------------------
+# xray backend for vmess + vless (optional)
+#
+# When true, vmess + vless inbounds use the embedded Xray-core instead of
+# sing-box. Required for XHTTP transport, Mux.Cool, SplitHTTP variants,
+# REALITY-with-uquic, and rich fallback handlers — features sing-box
+# doesn't carry. Default (false) keeps vmess + vless on sing-box, same
+# as today. Flip to true on a test node to validate before turning it
+# on production-wide. Every non-vmess/vless protocol is unaffected
+# regardless of this setting.
+# ---------------------------------------------------------------------------
+use_xray_for_vmess_vless=false
+
+# ---------------------------------------------------------------------------
 # block list (audit rules) + geosite/geoip data files
 #   block_list_file = soga-style rules file (domain:/full:/regexp:/ip:/
 #                     port:/geosite:/geoip:/plain). install.sh drops the
